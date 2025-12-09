@@ -3,6 +3,9 @@
 import asyncio
 import logging
 import re
+import os  # <--- Додано для роботи зі змінними оточення
+from aiohttp import web # <--- Додано для веб-сервера
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, CommandStart, StateFilter
@@ -15,7 +18,9 @@ from aiogram.filters.callback_data import CallbackData
 import database as db
 
 # --- Конфігурація ---
-TOKEN = "7943770029:AAGdKA8iegeEWGuWjFT1r4SFC5lTTLryhvI"  # Вставте ваш токен сюди
+# ВАЖЛИВО: На Render токен краще брати з os.environ, але поки залишаємо як є, 
+# або замініть на: os.getenv("TELEGRAM_API_TOKEN")
+TOKEN = "7943770029:AAGdKA8iegeEWGuWjFT1r4SFC5lTTLryhvI" 
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
@@ -119,26 +124,20 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @dp.message(Command("help"))
 @dp.message(StateFilter(None), F.text == "❓ Допомога")
-@dp.message(Command("help"))
-@dp.message(StateFilter(None), F.text == "❓ Допомога")
 async def show_help(message: Message):
     help_text = (
         "<b>🤖 Довідка та Інструкція користувача</b>\n\n"
-        
         "<b>📌 Основні можливості:</b>\n"
         "• <b>Пошук:</b> Знаходьте фахівців за конкретними мовами програмування або категоріями.\n"
         "• <b>Гібридний профіль:</b> Ви можете бути і Замовником, і Фахівцем з одного акаунту.\n"
         "• <b>Рейтинг:</b> Оцінюйте співпрацю. Рейтинги виконавця та замовника рахуються окремо.\n\n"
-        
         "<b>⚙️ Формат введення даних:</b>\n"
         "• <b>Навички:</b> Вводьте через кому (наприклад: <i>Python, Docker, AWS</i>).\n"
         "• <b>Портфоліо:</b> Посилання має починатися з <code>http://</code> або <code>https://</code>.\n\n"
-        
         "<b>🛡 Поради щодо безпеки угод:</b>\n"
         "1. Не починайте роботу до того, як статус замовлення стане <b>«В роботі»</b>.\n"
         "2. Контакти (username) відкриваються лише після підтвердження замовлення обома сторонами.\n"
         "3. Завжди завершуйте замовлення кнопкою <b>«Завершити»</b>, щоб отримати можливість залишити відгук.\n\n"
-        
         "<b>Команди:</b>\n"
         "/start - Перезапуск бота\n"
         "/myprofile - Керування анкетами\n"
@@ -154,21 +153,17 @@ async def cmd_cancel(message: Message, state: FSMContext):
     await message.answer("Дію скасовано.", reply_markup=get_main_keyboard(message.from_user.id))
 
 # --- ПРІОРИТЕТНИЙ ОБРОБНИК: ПРОПУСТИТИ ---
-# Цей блок переміщено нагору, щоб він спрацьовував раніше за перевірку тексту
 @dp.message(StateFilter(ProfileCreation), F.text == "Пропустити")
 async def skip_step(message: Message, state: FSMContext):
     user_data = await state.get_data()
-    # Якщо не в режимі редагування, ігноруємо (або можна обробити як помилку)
     if not user_data.get('is_editing'): 
         return
 
     curr = await state.get_state()
-    # Логіка переходів
     if curr == ProfileCreation.specialization: await ask_skills(message, state)
     elif curr == ProfileCreation.skills: await ask_experience(message, state)
     elif curr == ProfileCreation.experience: await ask_portfolio(message, state)
     elif curr == ProfileCreation.portfolio: await finish_spec_profile(message, state)
-    # Ім'я і контакти мають свої окремі кнопки або логіку, тут їх пропускати не треба
 
 # --- ЛОГІКА ПРОФІЛІВ ---
 
@@ -333,7 +328,6 @@ async def ask_skills(message: types.Message, state: FSMContext):
 
 @dp.message(ProfileCreation.skills, F.text)
 async def process_skills(message: Message, state: FSMContext):
-    # Тут перевірка на "Пропустити" вже не потрібна, бо її перехопив handler зверху
     normalized, invalid = normalize_and_validate_tech(message.text)
     if invalid:
         await message.answer(f"❌ Невідомі технології: {', '.join(invalid)}. Спробуйте ще раз.")
@@ -547,7 +541,7 @@ async def send_rating_request(rater_id, target_id, order_id, target_role_str):
     for i in range(1, 6):
         builder.add(InlineKeyboardButton(text=f"{i}⭐️", callback_data=RateUser(target_id=target_id, order_id=order_id, score=i).pack()))
     
-    role_ua = "фахівцець" if target_role_str == "specialist" else "замовник"
+    role_ua = "фахівця" if target_role_str == "specialist" else "замовника"
     await bot.send_message(rater_id, f"Будь ласка, оцініть співпрацю з {role_ua}:", reply_markup=builder.as_markup())
 
 @dp.callback_query(RateUser.filter())
@@ -671,8 +665,26 @@ async def view_profile(query: CallbackQuery, callback_data: ViewProfile):
 async def unknown_command(message: Message):
     await message.reply("Невідома команда.")
 
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+async def health_check(request):
+    return web.Response(text="Bot is running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"🌍 Fake web server started on port {port}")
+
+# --- ГОЛОВНА ФУНКЦІЯ ---
 async def main():
     db.init_db()
+    # Спочатку запускаємо веб-сервер (фоново)
+    await start_web_server()
+    # Потім запускаємо поллінг бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
